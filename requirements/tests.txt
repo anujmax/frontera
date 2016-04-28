@@ -1,4 +1,5 @@
 pytest>=2.6.4
+MySQL-python>=1.2.5
 PyMySQL>=0.6.3
 psycopg2>=2.5.4
 scrapy>=0.24
@@ -7,7 +8,7 @@ SQLAlchemy>=1.0.0
 cachetools
 pyzmq
 msgpack-python
-kafka-python<=0.9.5
+kafka-python>=1.0.0
 pytest-cov
 happybase>=1.0.0
 mock
