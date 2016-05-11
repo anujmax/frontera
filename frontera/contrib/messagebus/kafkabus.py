@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
-from frontera.core.messagebus import BaseMessageBus, BaseSpiderLogStream, BaseSpiderFeedStream, \
-    BaseStreamConsumer, BaseScoringLogStream, BaseStreamProducer
 
-from kafka import KafkaClient, SimpleConsumer, KeyedProducer as KafkaKeyedProducer, SimpleProducer as KafkaSimpleProducer
-from kafka.common import BrokerResponseError, MessageSizeTooLargeError
+from logging import getLogger
+
+from kafka import KafkaClient, SimpleConsumer
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition
+from kafka.common import BrokerResponseError
 from kafka.protocol import CODEC_NONE
 
 from frontera.contrib.backends.partitioners import FingerprintPartitioner, Crc32NamePartitioner
@@ -13,11 +14,13 @@ from logging import getLogger
 from time import sleep
 import six
 from w3lib.util import to_bytes
+from frontera.core.messagebus import BaseMessageBus, BaseSpiderLogStream, BaseSpiderFeedStream, \
+    BaseStreamConsumer, BaseScoringLogStream, BaseStreamProducer
 
 logger = getLogger("messagebus.kafka")
 
 
-class Consumer(BaseStreamConsumer):
+class DeprecatedConsumer(BaseStreamConsumer):
     """
     Used in DB and SW worker. SW consumes per partition.
     """
@@ -71,68 +74,75 @@ class Consumer(BaseStreamConsumer):
         return 0
 
 
+class Consumer(BaseStreamConsumer):
+    """
+    Used in DB and SW worker. SW consumes per partition.
+    """
+    def __init__(self, location, topic, group, partition_id):
+        self._location = location
+        self._group = group
+        self._topic = topic
+        self._partition_ids = [partition_id] if partition_id is not None else None
+
+        self._consumer = KafkaConsumer(
+            bootstrap_servers=self._location,
+            group_id=self._group,
+            max_partition_fetch_bytes=10485760)
+        if self._partition_ids:
+            self._consumer.assign([TopicPartition(self._topic, pid) for pid in self._partition_ids])
+        else:
+            self._consumer.subscribe(self._topic)
+
+    def get_messages(self, timeout=0.1, count=1):
+        while True:
+            try:
+                batch = self._consumer.poll(timeout_ms=timeout)
+                for _, records in batch.iteritems():
+                    for record in records:
+                        yield record.value
+            except Exception, err:
+                logger.warning("Error %s" % err)
+            finally:
+                break
+
+    def get_offset(self):
+        return 0
+
+
 class SimpleProducer(BaseStreamProducer):
-    def __init__(self, location, topic, codec):
+    def __init__(self, location, topic, compression):
         self._location = location
         self._topic = topic
-        self._codec = codec
+        self._compression = compression
         self._create()
 
     def _create(self):
-        self._client = KafkaClient(self._location)
-        self._producer = KafkaSimpleProducer(self._client, codec=self._codec)
+        self._producer = KafkaProducer(bootstrap_servers=self._location, retries=5,
+                                       compression_type=self._compression)
 
     def send(self, key, *messages):
-        self._producer.send_messages(self._topic, *messages)
+        for msg in messages:
+            self._producer.send(self._topic, value=msg)
 
-    def get_offset(self, partition_id):
-        # Kafka has it's own offset management
-        raise KeyError
+    def flush(self):
+        self._producer.flush()
 
 
 class KeyedProducer(BaseStreamProducer):
-    def __init__(self, location, topic_done, partitioner_cls, codec):
-        self._prod = None
+    def __init__(self, location, topic_done, partitioner, compression):
         self._location = location
         self._topic_done = topic_done
-        self._partitioner_cls = partitioner_cls
-        self._codec = codec
-
-    def _connect_producer(self):
-        if self._prod is None:
-            try:
-                self._client = KafkaClient(self._location)
-                self._prod = KafkaKeyedProducer(self._client, partitioner=self._partitioner_cls, codec=self._codec)
-            except BrokerResponseError:
-                self._prod = None
-                logger.warning("Could not connect producer to Kafka server")
-                return False
-        return True
+        self._partitioner = partitioner
+        self._compression = compression
+        self._producer = KafkaProducer(bootstrap_servers=self._location, partitioner=partitioner, retries=5,
+                                       compression_type=self._compression)
 
     def send(self, key, *messages):
-        success = False
-        max_tries = 5
-        if self._connect_producer():
-            n_tries = 0
-            while not success and n_tries < max_tries:
-                try:
-                    self._prod.send_messages(self._topic_done, key, *messages)
-                    success = True
-                except MessageSizeTooLargeError as e:
-                    logger.error(str(e))
-                    break
-                except BrokerResponseError:
-                    n_tries += 1
-                    logger.warning(
-                        "Could not send message. Try {0}/{1}".format(
-                            n_tries, max_tries)
-                    )
-                    sleep(1.0)
-        return success
+        for msg in messages:
+            self._producer.send(self._topic_done, key=key, value=msg)
 
-    def get_offset(self, partition_id):
-        # Kafka has it's own offset management
-        raise KeyError
+    def flush(self):
+        self._producer.flush()
 
 
 class SpiderLogStream(BaseSpiderLogStream):
@@ -141,10 +151,12 @@ class SpiderLogStream(BaseSpiderLogStream):
         self._db_group = messagebus.general_group
         self._sw_group = messagebus.sw_group
         self._topic_done = messagebus.topic_done
-        self._codec = messagebus.codec
+        self._compression_type = messagebus.compression_type
+        self._partitions = messagebus.spider_log_partitions
 
     def producer(self):
-        return KeyedProducer(self._location, self._topic_done, FingerprintPartitioner, self._codec)
+        return KeyedProducer(self._location, self._topic_done, FingerprintPartitioner(self._partitions),
+                             self._compression_type)
 
     def consumer(self, partition_id, type):
         """
@@ -154,7 +166,7 @@ class SpiderLogStream(BaseSpiderLogStream):
         :return:
         """
         group = self._sw_group if type == 'sw' else self._db_group
-        return Consumer(self._location, self._topic_done, group, partition_id)
+        return DeprecatedConsumer(self._location, self._topic_done, group, partition_id)
 
 
 class SpiderFeedStream(BaseSpiderFeedStream):
@@ -165,10 +177,11 @@ class SpiderFeedStream(BaseSpiderFeedStream):
         self._max_next_requests = messagebus.max_next_requests
         self._hostname_partitioning = messagebus.hostname_partitioning
         self._offset_fetcher = OffsetsFetcher(self._location, self._topic, self._general_group)
-        self._codec = messagebus.codec
+        self._compression_type = messagebus.compression_type
+        self._partitions = messagebus.spider_feed_partitions
 
     def consumer(self, partition_id):
-        return Consumer(self._location, self._topic, self._general_group, partition_id)
+        return DeprecatedConsumer(self._location, self._topic, self._general_group, partition_id)
 
     def available_partitions(self):
         partitions = []
@@ -179,8 +192,9 @@ class SpiderFeedStream(BaseSpiderFeedStream):
         return partitions
 
     def producer(self):
-        partitioner = Crc32NamePartitioner if self._hostname_partitioning else FingerprintPartitioner
-        return KeyedProducer(self._location, self._topic, partitioner, self._codec)
+        partitioner = Crc32NamePartitioner(self._partitions) if self._hostname_partitioning \
+            else FingerprintPartitioner(self._partitions)
+        return KeyedProducer(self._location, self._topic, partitioner, self._compression_type)
 
 
 class ScoringLogStream(BaseScoringLogStream):
@@ -188,13 +202,13 @@ class ScoringLogStream(BaseScoringLogStream):
         self._topic = messagebus.topic_scoring
         self._group = messagebus.general_group
         self._location = messagebus.kafka_location
-        self._codec = messagebus.codec
+        self._compression_type = messagebus.compression_type
 
     def consumer(self):
-        return Consumer(self._location, self._topic, self._group, partition_id=None)
+        return DeprecatedConsumer(self._location, self._topic, self._group, partition_id=None)
 
     def producer(self):
-        return SimpleProducer(self._location, self._topic, self._codec)
+        return SimpleProducer(self._location, self._topic, self._compression_type)
 
 
 class MessageBus(BaseMessageBus):
@@ -207,22 +221,11 @@ class MessageBus(BaseMessageBus):
         self.spider_partition_id = settings.get('SPIDER_PARTITION_ID')
         self.max_next_requests = settings.MAX_NEXT_REQUESTS
         self.hostname_partitioning = settings.get('QUEUE_HOSTNAME_PARTITIONING')
-
-        self.codec = None
-        codec = settings.get('KAFKA_CODEC_LEGACY')
-        if codec == 'none':
-            from kafka.protocol import CODEC_NONE
-            self.codec = CODEC_NONE
-        if codec == 'snappy':
-            from kafka.protocol import CODEC_SNAPPY
-            self.codec = CODEC_SNAPPY
-        if codec == 'gzip':
-            from kafka.protocol import CODEC_GZIP
-            self.codec = CODEC_GZIP
-        if self.codec is None:
-            raise NameError("Non-existent Kafka compression codec.")
-
+        codec = settings.get('KAFKA_CODEC')
+        self.codec = codec if codec else CODEC_NONE
         self.kafka_location = settings.get('KAFKA_LOCATION')
+        self.spider_log_partitions = settings.get('SPIDER_LOG_PARTITIONS')
+        self.spider_feed_partitions = settings.get('SPIDER_FEED_PARTITIONS')
 
     def spider_log(self):
         return SpiderLogStream(self)
