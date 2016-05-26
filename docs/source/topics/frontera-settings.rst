@@ -646,6 +646,17 @@ Default:: ``CODEC_NONE``
 Kafka protocol compression codec, see kafka-python documentation for more details. Please use symbols from kafka-python
 package.
 
+.. setting:: KAFKA_USE_SIMPLE_CONSUMER
+
+KAFKA_USE_SIMPLE_CONSUMER
+-------------------------
+
+Default:: ``False``
+
+In case of ``True`` Kafka :term:`message bus` will use Simple* deprecated interfaces from ``kafka-python`` package. For
+older (<0.9.0) Kafka versions this allows to enable consumer offsets auto commit, and therefore have a working flow
+control in :term:`db worker`. On the other side, older versions doesn't support automatic consumer rebalancing.
+
 .. setting:: FRONTIER_GROUP
 
 FRONTIER_GROUP
