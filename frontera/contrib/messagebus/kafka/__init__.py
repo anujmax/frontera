@@ -49,7 +49,7 @@ class OffsetsFetcher(object):
                 fail_on_error=False)
             try:
                 check_error(resp)
-            except Exception, exc:
+            except Exception as exc:
                 logger.error(exc)
                 pass
 

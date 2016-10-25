@@ -27,6 +27,9 @@ class BaseStreamConsumer(object):
         """
         raise NotImplementedError
 
+    def close(self):
+        pass
+
 
 @six.add_metaclass(ABCMeta)
 class BaseStreamProducer(object):
@@ -48,7 +51,6 @@ class BaseStreamProducer(object):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def get_offset(self, partition_id):
         """
         Returns producer offset for partition. Raises KeyError, if partition isn't available or doesn't exist.
