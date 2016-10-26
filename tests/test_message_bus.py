@@ -9,6 +9,7 @@ from random import randint
 from time import sleep
 from six.moves import range
 import logging
+from sys import stdout
 import unittest
 from w3lib.util import to_bytes
 
@@ -117,6 +118,12 @@ class KafkaConsumerPolling(object):
 
 class KafkaMessageBusTest(unittest.TestCase):
     def setUp(self):
+        logging.basicConfig()
+        handler = logging.StreamHandler(stdout)
+        logger = logging.getLogger("kafka")
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+
         kafka_location = "127.0.0.1:9092"
         client = KafkaClient(kafka_location)
         client.ensure_topic_exists("frontier-todo")
@@ -124,7 +131,7 @@ class KafkaMessageBusTest(unittest.TestCase):
         client.ensure_topic_exists("frontier-score")
         client.close()
 
-        logging.basicConfig(level=logging.DEBUG)
+
         settings = Settings()
         settings.set('KAFKA_LOCATION', kafka_location)
         settings.set('SPIDER_FEED_PARTITIONS', 1)
