@@ -28,6 +28,10 @@ class BaseStreamConsumer(object):
         raise NotImplementedError
 
     def close(self):
+        """
+        Performs necessary cleanup and closes consumer.
+        :return: none
+        """
         pass
 
 
@@ -58,6 +62,13 @@ class BaseStreamProducer(object):
         :return: int producer offset
         """
         raise NotImplementedError
+
+    def close(self):
+        """
+        Performs all necessary cleanup and closes the producer.
+        :return:  none
+        """
+        pass
 
 
 @six.add_metaclass(ABCMeta)

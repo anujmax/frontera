@@ -90,6 +90,8 @@ class SimpleProducer(BaseStreamProducer):
     def flush(self):
         self._producer.flush()
 
+    def close(self):
+        self._producer.close()
 
 
 class KeyedProducer(BaseStreamProducer):

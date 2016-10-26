@@ -158,6 +158,10 @@ class KafkaMessageBusTest(unittest.TestCase):
         self.sp_sf_c = KafkaConsumerPolling(spider_feed.consumer(partition_id=0))
 
     def tearDown(self):
+        self.sw_us_p.close()
+        self.db_sf_p.close()
+        self.sp_sl_p.close()
+
         self.sw_sl_c.close()
         self.db_sl_c.close()
         self.db_us_c.close()
