@@ -131,7 +131,6 @@ class KafkaMessageBusTest(unittest.TestCase):
         client.ensure_topic_exists("frontier-score")
         client.close()
 
-
         settings = Settings()
         settings.set('KAFKA_LOCATION', kafka_location)
         settings.set('SPIDER_FEED_PARTITIONS', 1)

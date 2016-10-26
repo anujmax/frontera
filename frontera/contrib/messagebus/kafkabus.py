@@ -134,7 +134,7 @@ class SpiderLogStream(BaseSpiderLogStream):
         :param type: either 'db' or 'sw'
         :return:
         """
-        group = self._sw_group if type == 'sw' else self._db_group
+        group = self._sw_group if type == b'sw' else self._db_group
         c = Consumer(self._location, self._topic, group, partition_id)
         assert len(c._consumer.partitions_for_topic(self._topic)) == self._partitions
         return c
