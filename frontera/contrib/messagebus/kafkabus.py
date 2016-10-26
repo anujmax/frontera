@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from kafka import KafkaClient, SimpleConsumer
+from logging import getLogger
+from time import sleep
+
+import six
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
-from kafka.common import BrokerResponseError
-from kafka.errors import OffsetOutOfRangeError
 
 from frontera.contrib.backends.partitioners import FingerprintPartitioner, Crc32NamePartitioner
 from frontera.contrib.messagebus.kafka import OffsetsFetcher
-from logging import getLogger
-
-import six
-from time import sleep
-from w3lib.util import to_bytes
 from frontera.core.messagebus import BaseMessageBus, BaseSpiderLogStream, BaseSpiderFeedStream, \
     BaseStreamConsumer, BaseScoringLogStream, BaseStreamProducer
 

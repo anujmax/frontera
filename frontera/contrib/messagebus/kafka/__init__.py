@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
+
 from collections import namedtuple
 from logging import getLogger
 
 from kafka import KafkaClient
-from kafka.common import OffsetRequestPayload, check_error, OffsetFetchRequestPayload, UnknownTopicOrPartitionError
+from kafka.common import OffsetRequestPayload, check_error, OffsetFetchRequestPayload
 
 logger = getLogger("offset-fetcher")
 OffsetsStruct = namedtuple("OffsetsStruct", ["commit", "produced"])
