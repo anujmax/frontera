@@ -54,8 +54,8 @@ class Consumer(BaseStreamConsumer):
                 break
         return result
 
-    def get_offset(self):
-        return 0
+    def get_offset(self, partition_id):
+        return self._consumer.position(self._partition_ids[partition_id])
 
     def close(self):
         self._consumer.commit()
