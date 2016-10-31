@@ -177,39 +177,82 @@ class OffsetsFetcherAsync(object):
                 refresh_future = self._client.cluster.request_update()
                 self._client.poll(future=refresh_future, sleep=True)
 
-    def _send_offset_request(self, partition, timestamp):
+    def _offsets(self, partitions, timestamp):
+        """Fetch a single offset before the given timestamp for the partition.
+
+        Blocks until offset is obtained, or a non-retriable exception is raised
+
+        Arguments:
+            partition The partition that needs fetching offset.
+            timestamp (int): timestamp for fetching offset. -1 for the latest
+                available, -2 for the earliest available. Otherwise timestamp
+                is treated as epoch seconds.
+
+        Returns:
+            int: message offset
+        """
+        while True:
+            offsets = {}
+            ok = True
+            for future in self._send_offset_request(partitions, timestamp):
+                self._client.poll(future=future)
+
+                if future.succeeded():
+                    for tp, offset in future.value:
+                        offsets[tp] = offset
+                    continue
+
+                if not future.retriable():
+                    raise future.exception # pylint: disable-msg=raising-bad-type
+
+                if future.exception.invalid_metadata:
+                    refresh_future = self._client.cluster.request_update()
+                    self._client.poll(future=refresh_future, sleep=True)
+                    ok = False
+                    break
+            if ok:
+                return offsets
+
+    def _send_offset_request(self, partitions, timestamp):
         """Fetch a single offset before the given timestamp for the partition.
 
         Arguments:
-            partition (TopicPartition): partition that needs fetching offset
+            partitions iterable of TopicPartition: partitions that needs fetching offset
             timestamp (int): timestamp for fetching offset
 
         Returns:
-            Future: resolves to the corresponding offset
+            list of Future: resolves to the corresponding offset
         """
-        node_id = self._client.cluster.leader_for_partition(partition)
-        if node_id is None:
-            log.debug("Partition %s is unknown for fetching offset,"
-                      " wait for metadata refresh", partition)
-            return Future().failure(Errors.StaleMetadata(partition))
-        elif node_id == -1:
-            log.debug("Leader for partition %s unavailable for fetching offset,"
-                      " wait for metadata refresh", partition)
-            return Future().failure(Errors.LeaderNotAvailableError(partition))
+        topic = partitions[0].topic
+        nodes_per_partitions = {}
+        for partition in partitions:
+            node_id = self._client.cluster.leader_for_partition(partition)
+            if node_id is None:
+                log.debug("Partition %s is unknown for fetching offset,"
+                          " wait for metadata refresh", partition)
+                return Future().failure(Errors.StaleMetadata(partition))
+            elif node_id == -1:
+                log.debug("Leader for partition %s unavailable for fetching offset,"
+                          " wait for metadata refresh", partition)
+                return Future().failure(Errors.LeaderNotAvailableError(partition))
+            nodes_per_partitions.setdefault(node_id, []).append(partition)
 
-        request = OffsetRequest[0](
-            -1, [(partition.topic, [(partition.partition, timestamp, 1)])]
-        )
         # Client returns a future that only fails on network issues
         # so create a separate future and attach a callback to update it
         # based on response error codes
-        future = Future()
-        _f = self._client.send(node_id, request)
-        _f.add_callback(self._handle_offset_response, partition, future)
-        _f.add_errback(lambda e: future.failure(e))
-        return future
+        futures = []
+        for node_id, partitions in six.iteritems(nodes_per_partitions):
+            request = OffsetRequest[0](
+                -1, [(topic, [(partition.partition, timestamp, 1) for partition in partitions])]
+            )
+            future_request = Future()
+            _f = self._client.send(node_id, request)
+            _f.add_callback(self._handle_offset_response, partitions, future_request)
+            _f.add_errback(lambda e: future_request.failure(e))
+            futures.append(future_request)
+        return futures
 
-    def _handle_offset_response(self, partition, future, response):
+    def _handle_offset_response(self, partitions, future, response):
         """Callback for the response of the list offset call above.
 
         Arguments:
@@ -221,29 +264,30 @@ class OffsetsFetcherAsync(object):
             AssertionError: if response does not match partition
         """
         topic, partition_info = response.topics[0]
-        assert len(response.topics) == 1 and len(partition_info) == 1, (
-            'OffsetResponse should only be for a single topic-partition')
-
-        part, error_code, offsets = partition_info[0]
-        assert topic == partition.topic and part == partition.partition, (
-            'OffsetResponse partition does not match OffsetRequest partition')
-
-        error_type = Errors.for_code(error_code)
-        if error_type is Errors.NoError:
-            assert len(offsets) == 1, 'Expected OffsetResponse with one offset'
-            offset = offsets[0]
-            log.debug("Fetched offset %d for partition %s", offset, partition)
-            future.success(offset)
-        elif error_type in (Errors.NotLeaderForPartitionError,
-                       Errors.UnknownTopicOrPartitionError):
-            log.debug("Attempt to fetch offsets for partition %s failed due"
-                      " to obsolete leadership information, retrying.",
-                      partition)
-            future.failure(error_type(partition))
-        else:
-            log.warning("Attempt to fetch offsets for partition %s failed due to:"
-                        " %s", partition, error_type)
-            future.failure(error_type(partition))
+        assert len(response.topics) == 1, (
+            'OffsetResponse should only be for a single topic')
+        partition_ids = set([part.partition for part in partitions])
+        result = []
+        for pi in partition_info:
+            part, error_code, offsets = pi
+            assert topic == partitions[0].topic and part in partition_ids, (
+                'OffsetResponse partition does not match OffsetRequest partition')
+            error_type = Errors.for_code(error_code)
+            if error_type is Errors.NoError:
+                assert len(offsets) == 1, 'Expected OffsetResponse with one offset'
+                log.debug("Fetched offset %s for partition %d", offsets[0], part)
+                result.append((TopicPartition(topic, part), offsets[0]))
+            elif error_type in (Errors.NotLeaderForPartitionError,
+                           Errors.UnknownTopicOrPartitionError):
+                log.debug("Attempt to fetch offsets for partition %s failed due"
+                          " to obsolete leadership information, retrying.",
+                          str(partitions))
+                future.failure(error_type(partitions))
+            else:
+                log.warning("Attempt to fetch offsets for partition %s failed due to:"
+                            " %s", partitions, error_type)
+                future.failure(error_type(partitions))
+        future.success(result)
 
     def fetch_committed_offsets(self, partitions):
         """Fetch the current committed offsets for specified partitions
@@ -368,15 +412,15 @@ class OffsetsFetcherAsync(object):
         self._partitions = [TopicPartition(self.topic, partition_id)
                                 for partition_id in
                                     self._client.cluster.partitions_for_topic(self.topic)]
-        offsets = {}
-        for tp in self._partitions:
-            offsets[tp] = self._offset(tp, -1)
 
+        offsets = self._offsets(self._partitions, -1)
         committed = self.fetch_committed_offsets(self._partitions)
         lags = {}
         for tp, offset in six.iteritems(offsets):
             commit_offset = committed[tp] if tp in committed else 0
-            lag = offset - commit_offset.offset
-            log.debug("%s (%s): %s, %s, %s", self.topic, tp.partition, offset, committed[tp], lag)
-            lags[tp.partition] = lag
+            numerical = commit_offset if type(commit_offset) == int else commit_offset.offset
+            lag = offset - numerical
+            pid = tp.partition if type(tp) == TopicPartition else tp
+            log.debug("Lag for %s (%s): %s, %s, %s", self.topic, pid, offset, commit_offset, lag)
+            lags[pid] = lag
         return lags
