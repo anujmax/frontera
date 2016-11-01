@@ -28,7 +28,8 @@ class Consumer(BaseStreamConsumer):
             group_id=self._group,
             max_partition_fetch_bytes=10485760,
             consumer_timeout_ms=100,
-            client_id="%s-%s" % (self._topic, str(partition_id) if partition_id is not None else "all")
+            client_id="%s-%s" % (self._topic, str(partition_id) if partition_id is not None else "all"),
+            request_timeout_ms=120 * 1000,
         )
 
         if partition_id is not None:
@@ -55,7 +56,10 @@ class Consumer(BaseStreamConsumer):
         return result
 
     def get_offset(self, partition_id):
-        return self._consumer.position(self._partition_ids[partition_id])
+        for tp in self._partition_ids:
+            if tp.partition == partition_id:
+                return self._consumer.position(tp)
+        raise KeyError("Can't find partition %d", partition_id)
 
     def close(self):
         self._consumer.commit()
