@@ -11,6 +11,7 @@ from kafka.protocol.commit import GroupCoordinatorRequest, OffsetFetchRequest
 from kafka.protocol.offset import OffsetRequest
 from kafka.structs import OffsetAndMetadata
 
+
 log = logging.getLogger('offsets-fetcher')
 
 
@@ -30,22 +31,22 @@ class OffsetsFetcherAsync(object):
             if key in configs:
                 self.config[key] = configs[key]
         self._client = KafkaClient(**configs)
-        self.coordinator_id = None
+        self._coordinator_id = None
         self.group_id = configs['group_id']
         self.topic = configs['topic']
 
-    def ensure_coordinator_known(self):
+    def _ensure_coordinator_known(self):
         """Block until the coordinator for this group is known
         (and we have an active connection -- java client uses unsent queue).
         """
-        while self.coordinator_unknown():
+        while self._coordinator_unknown():
 
             # Prior to 0.8.2 there was no group coordinator
             # so we will just pick a node at random and treat
             # it as the "coordinator"
             if self.config['api_version'] < (0, 8, 2):
-                self.coordinator_id = self._client.least_loaded_node()
-                self._client.ready(self.coordinator_id)
+                self._coordinator_id = self._client.least_loaded_node()
+                self._client.ready(self._coordinator_id)
                 continue
 
             future = self._send_group_coordinator_request()
@@ -61,29 +62,29 @@ class OffsetsFetcherAsync(object):
                 else:
                     raise future.exception # pylint: disable-msg=raising-bad-type
 
-    def coordinator_unknown(self):
+    def _coordinator_unknown(self):
         """Check if we know who the coordinator is and have an active connection
 
-        Side-effect: reset coordinator_id to None if connection failed
+        Side-effect: reset _coordinator_id to None if connection failed
 
         Returns:
             bool: True if the coordinator is unknown
         """
-        if self.coordinator_id is None:
+        if self._coordinator_id is None:
             return True
 
-        if self._client.is_disconnected(self.coordinator_id):
-            self.coordinator_dead()
+        if self._client.is_disconnected(self._coordinator_id):
+            self._coordinator_dead()
             return True
 
         return False
 
-    def coordinator_dead(self, error=None):
+    def _coordinator_dead(self, error=None):
         """Mark the current coordinator as dead."""
-        if self.coordinator_id is not None:
+        if self._coordinator_id is not None:
             log.warning("Marking the coordinator dead (node %s) for group %s: %s.",
-                        self.coordinator_id, self.group_id, error)
-            self.coordinator_id = None
+                        self._coordinator_id, self.group_id, error)
+            self._coordinator_id = None
 
     def _send_group_coordinator_request(self):
         """Discover the current coordinator for the group.
@@ -106,10 +107,10 @@ class OffsetsFetcherAsync(object):
 
     def _handle_group_coordinator_response(self, future, response):
         log.debug("Received group coordinator response %s", response)
-        if not self.coordinator_unknown():
+        if not self._coordinator_unknown():
             # We already found the coordinator, so ignore the request
             log.debug("Coordinator already known -- ignoring metadata response")
-            future.success(self.coordinator_id)
+            future.success(self._coordinator_id)
             return
 
         error_type = Errors.for_code(response.error_code)
@@ -121,11 +122,11 @@ class OffsetsFetcherAsync(object):
                 future.failure(Errors.IllegalStateError())
                 return
 
-            self.coordinator_id = response.coordinator_id
+            self._coordinator_id = response.coordinator_id
             log.info("Discovered coordinator %s for group %s",
-                     self.coordinator_id, self.group_id)
-            self._client.ready(self.coordinator_id)
-            future.success(self.coordinator_id)
+                     self._coordinator_id, self.group_id)
+            self._client.ready(self._coordinator_id)
+            future.success(self._coordinator_id)
         elif error_type is Errors.GroupCoordinatorNotAvailableError:
             log.debug("Group Coordinator Not Available; retry")
             future.failure(error_type())
@@ -146,50 +147,22 @@ class OffsetsFetcherAsync(object):
         # unless the error is caused by internal client pipelining
         if not isinstance(error, (Errors.NodeNotReadyError,
                                   Errors.TooManyInFlightRequests)):
-            self.coordinator_dead()
+            self._coordinator_dead()
         future.failure(error)
 
-    def _offset(self, partition, timestamp):
-        """Fetch a single offset before the given timestamp for the partition.
+    def offsets(self, partitions, timestamp):
+        """Fetch a single offset before the given timestamp for the set of partitions.
 
         Blocks until offset is obtained, or a non-retriable exception is raised
 
         Arguments:
-            partition The partition that needs fetching offset.
+            partitions (iterable of TopicPartition) The partition that needs fetching offset.
             timestamp (int): timestamp for fetching offset. -1 for the latest
                 available, -2 for the earliest available. Otherwise timestamp
                 is treated as epoch seconds.
 
         Returns:
-            int: message offset
-        """
-        while True:
-            future = self._send_offset_request(partition, timestamp)
-            self._client.poll(future=future)
-
-            if future.succeeded():
-                return future.value
-
-            if not future.retriable():
-                raise future.exception # pylint: disable-msg=raising-bad-type
-
-            if future.exception.invalid_metadata:
-                refresh_future = self._client.cluster.request_update()
-                self._client.poll(future=refresh_future, sleep=True)
-
-    def _offsets(self, partitions, timestamp):
-        """Fetch a single offset before the given timestamp for the partition.
-
-        Blocks until offset is obtained, or a non-retriable exception is raised
-
-        Arguments:
-            partition The partition that needs fetching offset.
-            timestamp (int): timestamp for fetching offset. -1 for the latest
-                available, -2 for the earliest available. Otherwise timestamp
-                is treated as epoch seconds.
-
-        Returns:
-            int: message offset
+            dict: TopicPartition and message offsets
         """
         while True:
             offsets = {}
@@ -302,7 +275,7 @@ class OffsetsFetcherAsync(object):
             return {}
 
         while True:
-            self.ensure_coordinator_known()
+            self._ensure_coordinator_known()
 
             # contact coordinator to fetch committed offsets
             future = self._send_offset_fetch_request(partitions)
@@ -333,10 +306,10 @@ class OffsetsFetcherAsync(object):
         if not partitions:
             return Future().success({})
 
-        elif self.coordinator_unknown():
+        elif self._coordinator_unknown():
             return Future().failure(Errors.GroupCoordinatorNotAvailableError)
 
-        node_id = self.coordinator_id
+        node_id = self._coordinator_id
 
         # Verify node is ready
         if not self._client.ready(node_id):
@@ -384,7 +357,7 @@ class OffsetsFetcherAsync(object):
                         future.failure(error)
                     elif error_type is Errors.NotCoordinatorForGroupError:
                         # re-discover the coordinator and retry
-                        self.coordinator_dead()
+                        self._coordinator_dead()
                         future.failure(error)
                     elif error_type in (Errors.UnknownMemberIdError,
                                         Errors.IllegalGenerationError):
@@ -409,18 +382,18 @@ class OffsetsFetcherAsync(object):
         future.success(offsets)
 
     def get(self):
-        self._partitions = [TopicPartition(self.topic, partition_id)
+        partitions = [TopicPartition(self.topic, partition_id)
                                 for partition_id in
                                     self._client.cluster.partitions_for_topic(self.topic)]
 
-        offsets = self._offsets(self._partitions, -1)
-        committed = self.fetch_committed_offsets(self._partitions)
+        offsets = self.offsets(partitions, -1)
+        committed = self.fetch_committed_offsets(partitions)
         lags = {}
         for tp, offset in six.iteritems(offsets):
             commit_offset = committed[tp] if tp in committed else 0
-            numerical = commit_offset if type(commit_offset) == int else commit_offset.offset
+            numerical = commit_offset if isinstance(commit_offset, int) else commit_offset.offset
             lag = offset - numerical
-            pid = tp.partition if type(tp) == TopicPartition else tp
+            pid = tp.partition if isinstance(tp, TopicPartition) else tp
             log.debug("Lag for %s (%s): %s, %s, %s", self.topic, pid, offset, commit_offset, lag)
             lags[pid] = lag
         return lags
