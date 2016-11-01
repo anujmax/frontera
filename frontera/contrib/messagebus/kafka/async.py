@@ -30,7 +30,7 @@ class OffsetsFetcherAsync(object):
         for key in self.config:
             if key in configs:
                 self.config[key] = configs[key]
-        self._client = KafkaClient(**configs)
+        self._client = KafkaClient(**self.config)
         self._coordinator_id = None
         self.group_id = configs['group_id']
         self.topic = configs['topic']
@@ -384,7 +384,9 @@ class OffsetsFetcherAsync(object):
     def get(self):
         topic_partitions = self._client.cluster.partitions_for_topic(self.topic)
         if not topic_partitions:
-            self._client.cluster.request_update()
+            future = self._client.cluster.request_update()
+            log.info("No partitions available, performing metadata update.")
+            self._client.poll(future=future)
             return {}
         partitions = [TopicPartition(self.topic, partition_id)
                                 for partition_id in topic_partitions]
