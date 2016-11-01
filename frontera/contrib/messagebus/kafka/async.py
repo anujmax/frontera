@@ -382,9 +382,12 @@ class OffsetsFetcherAsync(object):
         future.success(offsets)
 
     def get(self):
+        topic_partitions = self._client.cluster.partitions_for_topic(self.topic)
+        if not topic_partitions:
+            self._client.cluster.request_update()
+            return {}
         partitions = [TopicPartition(self.topic, partition_id)
-                                for partition_id in
-                                    self._client.cluster.partitions_for_topic(self.topic)]
+                                for partition_id in topic_partitions]
 
         offsets = self.offsets(partitions, -1)
         committed = self.fetch_committed_offsets(partitions)
