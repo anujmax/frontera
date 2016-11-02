@@ -58,7 +58,7 @@ class OffsetsFetcherAsync(object):
                     metadata_update = self._client.cluster.request_update()
                     self._client.poll(future=metadata_update)
                 else:
-                    raise future.exception # pylint: disable-msg=raising-bad-type
+                    raise future.exception  # pylint: disable-msg=raising-bad-type
 
     def _coordinator_unknown(self):
         """Check if we know who the coordinator is and have an active connection
@@ -174,7 +174,7 @@ class OffsetsFetcherAsync(object):
                     continue
 
                 if not future.retriable():
-                    raise future.exception # pylint: disable-msg=raising-bad-type
+                    raise future.exception  # pylint: disable-msg=raising-bad-type
 
                 if future.exception.invalid_metadata:
                     refresh_future = self._client.cluster.request_update()
@@ -249,7 +249,7 @@ class OffsetsFetcherAsync(object):
                 log.debug("Fetched offset %s for partition %d", offsets[0], part)
                 result.append((TopicPartition(topic, part), offsets[0]))
             elif error_type in (Errors.NotLeaderForPartitionError,
-                           Errors.UnknownTopicOrPartitionError):
+                                Errors.UnknownTopicOrPartitionError):
                 log.debug("Attempt to fetch offsets for partition %s failed due"
                           " to obsolete leadership information, retrying.",
                           str(partitions))
@@ -283,7 +283,7 @@ class OffsetsFetcherAsync(object):
                 return future.value
 
             if not future.retriable():
-                raise future.exception # pylint: disable-msg=raising-bad-type
+                raise future.exception  # pylint: disable-msg=raising-bad-type
 
             time.sleep(self.config['retry_backoff_ms'] / 1000.0)
 
@@ -386,9 +386,7 @@ class OffsetsFetcherAsync(object):
             log.info("No partitions available, performing metadata update.")
             self._client.poll(future=future)
             return {}
-        partitions = [TopicPartition(self.topic, partition_id)
-                                for partition_id in topic_partitions]
-
+        partitions = [TopicPartition(self.topic, partition_id) for partition_id in topic_partitions]
         offsets = self.offsets(partitions, -1)
         committed = self.fetch_committed_offsets(partitions)
         lags = {}
