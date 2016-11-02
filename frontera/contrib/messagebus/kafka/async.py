@@ -27,9 +27,7 @@ class OffsetsFetcherAsync(object):
 
     def __init__(self, **configs):
         self.config = copy.copy(self.DEFAULT_CONFIG)
-        for key in self.config:
-            if key in configs:
-                self.config[key] = configs[key]
+        self.config.update(configs)
         self._client = KafkaClient(**self.config)
         self._coordinator_id = None
         self.group_id = configs['group_id']
